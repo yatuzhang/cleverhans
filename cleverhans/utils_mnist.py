@@ -10,7 +10,7 @@ import warnings
 from . import utils
 
 
-def data_mnist(datadir='/tmp/', train_start=0, train_end=60000, test_start=0,
+def data_mnist(datadir='/ais/gobi4/zhangyat/project/MNIST_data/', train_start=0, train_end=60000, test_start=0,
                test_end=10000):
     """
     Load and preprocess MNIST dataset

@@ -2,11 +2,13 @@
 Model construction utilities based on keras
 """
 from .model import Model
-
+from kgp.models import Model as GPModel
+from kgp.layers import GP
+import numpy as np
 import keras
 from keras.utils import np_utils
 from keras.models import Sequential
-from keras.layers import Dense, Activation, Flatten
+from keras.layers import Dense, Activation, Flatten, Input
 
 from distutils.version import LooseVersion
 if LooseVersion(keras.__version__) >= LooseVersion('2.0.0'):
@@ -97,6 +99,55 @@ def cnn_model(logits=False, input_ph=None, img_rows=28, img_cols=28,
     else:
         return model
 
+def substitute_model(logits=False, input_ph=None, img_rows=28, img_cols=28, nb_classes=10, channels=1):
+    model = Sequential()
+
+    if keras.backend.image_dim_ordering() == 'th':
+        input_shape = (channels, img_rows, img_cols)
+    else:
+        input_shape = (img_rows, img_cols, channels)
+
+    # Define the layers successively (convolution layers are version dependent)
+    layers = [Flatten(input_shape=input_shape),
+              Dense(200),
+              Activation('relu'),
+              Dense(200),
+              Activation('relu'),
+              Dense(nb_classes)]
+
+    for layer in layers:
+        model.add(layer)
+
+    if logits:
+        logits_tensor = model(input_ph)
+    model.add(Activation('softmax'))
+
+    if logits:
+        return model, logits_tensor
+    else:
+        return model
+
+def gp_model(input_ph=None, img_rows=28, img_cols=28, nb_classes=10, channels=1):
+    if keras.backend.image_dim_ordering() == 'th':
+        input_shape = (channels, img_rows, img_cols)
+    else:
+        input_shape = (img_rows, img_cols, channels)
+    inputs = Input(shape=input_shape)
+    hidden = Flatten()(inputs)
+    hidden = Dense(200)(hidden)
+    hidden = Activation('relu')(hidden)
+    hidden = Dense(200)(hidden)
+    hidden = Activation('relu')(hidden)
+    hidden = Dense(nb_classes)(hidden)
+    gp_hypers = {'lik': np.asscalar(np.log(0.1)), 'cov': np.log([[0.5] * nb_classes])}
+    gp = GP(
+        hyp=gp_hypers,
+        batch_size=64,
+        nb_train_samples=1024)
+    outputs = [gp(hidden)]
+    outputs = Activation('softmax')(outputs)
+    model = GPModel(inputs=inputs, outputs=outputs)
+    return model
 
 class KerasModelWrapper(Model):
     """

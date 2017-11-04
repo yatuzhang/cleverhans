@@ -2,11 +2,13 @@
 Model construction utilities based on keras
 """
 from .model import Model
+from kgp.models import Model as GPModel
+from kgp.layers import GP
 import numpy as np
 import keras
 from keras.utils import np_utils
 from keras.models import Sequential
-from keras.layers import Dense, Activation, Flatten, Input, MaxPooling2D, Dropout
+from keras.layers import Dense, Activation, Flatten, Input
 
 from distutils.version import LooseVersion
 if LooseVersion(keras.__version__) >= LooseVersion('2.0.0'):
@@ -97,64 +99,6 @@ def cnn_model(logits=False, input_ph=None, img_rows=28, img_cols=28,
     else:
         return model
 
-def cnn_cifar10_model(logits=False, input_ph=None, img_rows=28, img_cols=28,
-              channels=1, nb_filters=64, nb_classes=10):
-    """
-    Defines a CNN model using Keras sequential model
-    :param logits: If set to False, returns a Keras model, otherwise will also
-                    return logits tensor
-    :param input_ph: The TensorFlow tensor for the input
-                    (needed if returning logits)
-                    ("ph" stands for placeholder but it need not actually be a
-                    placeholder)
-    :param img_rows: number of row in the image
-    :param img_cols: number of columns in the image
-    :param channels: number of color channels (e.g., 1 for MNIST)
-    :param nb_filters: number of convolutional filters per layer
-    :param nb_classes: the number of output classes
-    :return:
-    """
-    model = Sequential()
-
-    # Define the layers successively (convolution layers are version dependent)
-    if keras.backend.image_dim_ordering() == 'th':
-        input_shape = (channels, img_rows, img_cols)
-    else:
-        input_shape = (img_rows, img_cols, channels)
-
-    model.add(Conv2D(32, (3, 3), padding='same',
-                     input_shape=input_shape))
-    model.add(Activation('relu'))
-    model.add(Conv2D(32, (3, 3)))
-    model.add(Activation('relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-
-    model.add(Conv2D(64, (3, 3), padding='same'))
-    model.add(Activation('relu'))
-    model.add(Conv2D(64, (3, 3)))
-    model.add(Activation('relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-
-    model.add(Conv2D(128, (3, 3), padding='same'))
-    model.add(Activation('relu'))
-    model.add(Conv2D(128, (3, 3)))
-    model.add(Activation('relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-
-    model.add(Flatten())
-    model.add(Dense(512))
-    model.add(Activation('relu'))
-    model.add(Dense(nb_classes))
-
-    if logits:
-        logits_tensor = model(input_ph)
-    model.add(Activation('softmax'))
-
-    if logits:
-        return model, logits_tensor
-    else:
-        return model
-
 def substitute_model(logits=False, input_ph=None, img_rows=28, img_cols=28, nb_classes=10, channels=1):
     model = Sequential()
 
@@ -182,6 +126,28 @@ def substitute_model(logits=False, input_ph=None, img_rows=28, img_cols=28, nb_c
         return model, logits_tensor
     else:
         return model
+
+def gp_model(input_ph=None, img_rows=28, img_cols=28, nb_classes=10, channels=1):
+    if keras.backend.image_dim_ordering() == 'th':
+        input_shape = (channels, img_rows, img_cols)
+    else:
+        input_shape = (img_rows, img_cols, channels)
+    inputs = Input(shape=input_shape)
+    hidden = Flatten()(inputs)
+    hidden = Dense(200)(hidden)
+    hidden = Activation('relu')(hidden)
+    hidden = Dense(200)(hidden)
+    hidden = Activation('relu')(hidden)
+    hidden = Dense(nb_classes)(hidden)
+    gp_hypers = {'lik': np.asscalar(np.log(0.1)), 'cov': np.log([[0.5] * nb_classes])}
+    gp = GP(
+        hyp=gp_hypers,
+        batch_size=64,
+        nb_train_samples=1024)
+    outputs = [gp(hidden)]
+    outputs = Activation('softmax')(outputs)
+    model = GPModel(inputs=inputs, outputs=outputs)
+    return model
 
 class KerasModelWrapper(Model):
     """

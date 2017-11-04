@@ -8,6 +8,7 @@ from collections import OrderedDict
 from six.moves import xrange
 import warnings
 import logging
+import os
 
 known_number_types = (int, float, np.float16, np.float32, np.float64,
                       np.int8, np.int16, np.int32, np.int32, np.int64,
@@ -261,6 +262,24 @@ def create_logger(name):
 
     return base
 
+def setup_logger(logger_name, log_file=None, level=logging.INFO, stream=False):
+    l = logging.getLogger(logger_name)
+    formatter = logging.Formatter()
+    l.setLevel(level)
+    if log_file:
+        if not os.path.exists(logger_name):
+            mode = 'w'
+        else:
+            mode = 'a'
+        fileHandler = logging.FileHandler(log_file, mode=mode)
+        fileHandler.setFormatter(formatter)
+        l.addHandler(fileHandler)
+
+    if stream==True:
+        streamHandler = logging.StreamHandler()
+        streamHandler.setFormatter(formatter)
+        l.addHandler(streamHandler)
+        
 
 def deterministic_dict(normal_dict):
     """

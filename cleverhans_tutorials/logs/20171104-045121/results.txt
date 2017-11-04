@@ -1,0 +1,2 @@
+Namespace(batch_size=128, checkpoint=None, data_aug=6, eps=0.3, holdout=150, learning_rate=0.001, lmbda=0.1, nb_classes=10, nb_epochs=10, nb_epochs_s=10, summaries_dir='./logs/20171104-045121/')
+Preparing the black-box model.

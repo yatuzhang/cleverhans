@@ -366,7 +366,7 @@ def cifar_blackbox(train_start=0, train_end=60000, test_start=0,
     accuracies['sub'] = acc
 
     # Initialize the Fast Gradient Sign Method (FGSM) attack object.
-    fgsm_par = {'eps': FLAGS.eps, 'ord': np.inf, 'clip_min': 0., 'clip_max': 1.}
+    fgsm_par = {'eps': FLAGS.crafting_eps, 'ord': np.inf, 'clip_min': 0., 'clip_max': 1.}
     fgsm = FastGradientMethod(model_sub, sess=sess)
 
     # Craft adversarial examples using the substitute

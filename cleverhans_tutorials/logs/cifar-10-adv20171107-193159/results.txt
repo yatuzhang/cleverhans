@@ -1,0 +1,24 @@
+Namespace(batch_size=128, checkpoint=None, crafting_eps=0.3, data_aug=6, holdout=150, learning_rate=0.001, lmbda=0.7, nb_classes=10, nb_epochs=10, nb_epochs_s=10, summaries_dir='./logs/cifar-10-adv20171107-193159/', training_eps=0.3)
+Preparing the black-box model.
+Defined TensorFlow model graph.
+Test accuracy of adversarially trained black-box on legitimate test examples: 0.754111674328
+Training the substitute model.
+Defined TensorFlow model graph for the substitute.
+Substitute training epoch #0
+Augmenting substitute training data.
+Labeling substitute training data.
+Substitute training epoch #1
+Augmenting substitute training data.
+Labeling substitute training data.
+Substitute training epoch #2
+Augmenting substitute training data.
+Labeling substitute training data.
+Substitute training epoch #3
+Augmenting substitute training data.
+Labeling substitute training data.
+Substitute training epoch #4
+Augmenting substitute training data.
+Labeling substitute training data.
+Substitute training epoch #5
+Test accuracy of oracle on adversarial examples generated using the substitute: 0.327512690428
+Test accuracy of substitute on adversarial examples generated using the substitute: 0.133401015138

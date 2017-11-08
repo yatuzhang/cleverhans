@@ -152,6 +152,19 @@ class Flatten(Layer):
     def fprop(self, x):
         return tf.reshape(x, [-1, self.output_width])
 
+def make_gp_cnn(num_h=100, nb_filters=64, nb_classes=10,
+                   input_shape=(None, 28, 28, 1)):
+    layers = [Conv2D(nb_filters, (8, 8), (2, 2), "SAME"),
+              ReLU(),
+              Conv2D(nb_filters * 2, (6, 6), (2, 2), "VALID"),
+              ReLU(),
+              Conv2D(nb_filters * 2, (5, 5), (1, 1), "VALID"),
+              ReLU(),
+              Flatten(),
+              Linear(num_h)]
+
+    model = MLP(layers, input_shape)
+    return model
 
 def make_basic_cnn(nb_filters=64, nb_classes=10,
                    input_shape=(None, 28, 28, 1)):

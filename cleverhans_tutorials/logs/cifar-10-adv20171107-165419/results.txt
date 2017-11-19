@@ -1,3 +1,0 @@
-Namespace(batch_size=128, checkpoint=None, crafting_eps=0.5, data_aug=6, holdout=150, learning_rate=0.001, lmbda=0.1, nb_classes=10, nb_epochs=10, nb_epochs_s=10, summaries_dir='./logs/cifar-10-adv20171107-165419/', training_eps=0.3)
-Preparing the black-box model.
-Defined TensorFlow model graph.

@@ -14,16 +14,14 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.python.platform import flags
 import logging
-
+import time
 from cleverhans.utils_mnist import data_mnist
 from cleverhans.utils_tf import model_train, model_eval
 from cleverhans.attacks import FastGradientMethod
 from cleverhans_tutorials.tutorial_models import make_basic_cnn
-from cleverhans.utils import AccuracyReport, set_log_level
-
+from cleverhans.utils import AccuracyReport, set_log_level, setup_logger
+import argparse
 import os
-
-FLAGS = flags.FLAGS
 
 """
 CleverHans is intended to supply attacks and defense, not models.
@@ -31,6 +29,74 @@ Users may apply CleverHans to many different kinds of models.
 In this tutorial, we show you an example of the kind of model
 you might build.
 """
+
+def define():
+    timestr = time.strftime("%Y%m%d-%H%M%S")
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--batch_size',
+        type=int,
+        default=128,
+        help='Size of training batches.'
+    )
+    parser.add_argument(
+        '--learning_rate',
+        type=float,
+        default=0.001,
+        help='Learning rate for training.'
+    )
+    parser.add_argument(
+        '--summaries_dir',
+        type=str,
+        default="./logs/%s/"%(timestr),
+        help='Summaries/Tensorboard Location'
+    )
+    parser.add_argument(
+        '--checkpoint',
+        type=str,
+        default=None,
+        help='checpoint file'
+    )
+
+    #Flags related to oracle
+    parser.add_argument(
+        '--nb_epochs',
+        type=int,
+        default=10,
+        help='Number of epochs to train model.'
+    )
+
+    #Flags related to adversarial example
+    parser.add_argument(
+        '--eps',
+        type=float,
+        default=0.3,
+        help='FGSM epsilon.'
+    )
+    parser.add_argument(
+        '--clean_train',
+        dest='clean_train',
+        action='store_true'
+    )
+    parser.add_argument(
+        '--no_clean_train',
+        dest='clean_train',
+        action='store_false'
+    )
+    parser.set_defaults(clean_train=True)
+    parser.add_argument(
+        '--backprop_through_attack',
+        dest='backprop_through_attack',
+        action='store_true'
+    )
+    parser.add_argument(
+        '--no_backprop_through_attack',
+        dest='backprop_through_attack',
+        action='store_false'
+    )
+    parser.set_defaults(backprop_through_attack=False)
+    global FLAGS
+    FLAGS = parser.parse_args()
 
 
 def mnist_tutorial(train_start=0, train_end=60000, test_start=0,
@@ -88,7 +154,7 @@ def mnist_tutorial(train_start=0, train_end=60000, test_start=0,
         'batch_size': batch_size,
         'learning_rate': learning_rate
     }
-    fgsm_params = {'eps': 0.3}
+    fgsm_params = {'eps': FLAGS.eps}
     rng = np.random.RandomState([2017, 8, 30])
 
     if clean_train:
@@ -103,7 +169,7 @@ def mnist_tutorial(train_start=0, train_end=60000, test_start=0,
                 sess, x, y, preds, X_test, Y_test, args=eval_params)
             report.clean_train_clean_eval = acc
             assert X_test.shape[0] == test_end - test_start, X_test.shape
-            print('Test accuracy on legitimate examples: %0.4f' % acc)
+            logger.info('Test accuracy on legitimate examples: %0.4f' % acc)
         model_train(sess, x, y, preds, X_train, Y_train, evaluate=evaluate,
                     args=train_params, rng=rng)
 
@@ -132,7 +198,7 @@ def mnist_tutorial(train_start=0, train_end=60000, test_start=0,
         # Evaluate the accuracy of the MNIST model on adversarial examples
         eval_par = {'batch_size': batch_size}
         acc = model_eval(sess, x, y, preds_adv, X_test, Y_test, args=eval_par)
-        print('Test accuracy on adversarial examples: %0.4f\n' % acc)
+        logger.info('Test accuracy on adversarial examples: %0.4f\n' % acc)
         report.clean_train_adv_eval = acc
 
         # Calculate training error
@@ -142,7 +208,7 @@ def mnist_tutorial(train_start=0, train_end=60000, test_start=0,
                              Y_train, args=eval_par)
             report.train_clean_train_adv_eval = acc
 
-        print("Repeating the process, using adversarial training")
+        logger.info("Repeating the process, using adversarial training")
     # Redefine TF model graph
     model_2 = make_basic_cnn()
     preds_2 = model_2(x)
@@ -154,13 +220,13 @@ def mnist_tutorial(train_start=0, train_end=60000, test_start=0,
         eval_params = {'batch_size': batch_size}
         accuracy = model_eval(sess, x, y, preds_2, X_test, Y_test,
                               args=eval_params)
-        print('Test accuracy on legitimate examples: %0.4f' % accuracy)
+        logger.info('Test accuracy on legitimate examples: %0.4f' % accuracy)
         report.adv_train_clean_eval = accuracy
 
         # Accuracy of the adversarially trained model on adversarial examples
         accuracy = model_eval(sess, x, y, preds_2_adv, X_test,
                               Y_test, args=eval_params)
-        print('Test accuracy on adversarial examples: %0.4f' % accuracy)
+        logger.info('Test accuracy on adversarial examples: %0.4f' % accuracy)
         report.adv_train_adv_eval = accuracy
 
     # Perform and evaluate adversarial training
@@ -182,19 +248,17 @@ def mnist_tutorial(train_start=0, train_end=60000, test_start=0,
 
 
 def main(argv=None):
-    mnist_tutorial(nb_epochs=FLAGS.nb_epochs, batch_size=FLAGS.batch_size,
+    define()
+    if (FLAGS.summaries_dir and not os.path.exists(FLAGS.summaries_dir)):
+        os.makedirs(FLAGS.summaries_dir)
+    setup_logger('log', stream=True, log_file=FLAGS.summaries_dir+"mnist_adv_results.txt")
+    global logger
+    logger = logging.getLogger('log')
+    logger.info(FLAGS)
+    report = mnist_tutorial(nb_epochs=FLAGS.nb_epochs, batch_size=FLAGS.batch_size,
                    learning_rate=FLAGS.learning_rate,
                    clean_train=FLAGS.clean_train,
                    backprop_through_attack=FLAGS.backprop_through_attack)
 
-
 if __name__ == '__main__':
-    flags.DEFINE_integer('nb_epochs', 6, 'Number of epochs to train model')
-    flags.DEFINE_integer('batch_size', 128, 'Size of training batches')
-    flags.DEFINE_float('learning_rate', 0.001, 'Learning rate for training')
-    flags.DEFINE_bool('clean_train', True, 'Train on clean examples')
-    flags.DEFINE_bool('backprop_through_attack', False,
-                      ('If True, backprop through adversarial example '
-                       'construction process during adversarial training'))
-
     tf.app.run()

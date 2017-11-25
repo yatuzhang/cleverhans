@@ -58,18 +58,18 @@ class Layer(object):
 
 class Linear(Layer):
 
-    def __init__(self, num_hid):
+    def __init__(self, num_hid, name):
         self.num_hid = num_hid
+        self.name = name
 
     def set_input_shape(self, input_shape):
         batch_size, dim = input_shape
         self.input_shape = [batch_size, dim]
         self.output_shape = [batch_size, self.num_hid]
-        init = tf.random_normal([dim, self.num_hid], dtype=tf.float32)
-        init = init / tf.sqrt(1e-7 + tf.reduce_sum(tf.square(init), axis=0,
-                                                   keep_dims=True))
-        self.W = tf.Variable(init)
-        self.b = tf.Variable(np.zeros((self.num_hid,)).astype('float32'))
+        with tf.variable_scope(self.name):
+          self.W = tf.get_variable("W", shape=[dim, self.num_hid],
+             initializer=tf.contrib.layers.xavier_initializer())
+          self.b = tf.Variable(np.zeros((self.num_hid,)).astype('float32'))
 
     def fprop(self, x):
         return tf.matmul(x, self.W) + self.b
@@ -77,7 +77,7 @@ class Linear(Layer):
 
 class Conv2D(Layer):
 
-    def __init__(self, output_channels, kernel_shape, strides, padding):
+    def __init__(self, output_channels, kernel_shape, strides, padding, name):
         self.__dict__.update(locals())
         del self.self
 
@@ -87,12 +87,11 @@ class Conv2D(Layer):
                                                    self.output_channels)
         assert len(kernel_shape) == 4
         assert all(isinstance(e, int) for e in kernel_shape), kernel_shape
-        init = tf.random_normal(kernel_shape, dtype=tf.float32)
-        init = init / tf.sqrt(1e-7 + tf.reduce_sum(tf.square(init),
-                                                   axis=(0, 1, 2)))
-        self.kernels = tf.Variable(init)
-        self.b = tf.Variable(
-            np.zeros((self.output_channels,)).astype('float32'))
+        with tf.variable_scope(self.name):
+          self.kernels = tf.get_variable("kernels", shape=kernel_shape,
+             initializer=tf.contrib.layers.xavier_initializer())
+          self.b = tf.Variable(
+              np.zeros((self.output_channels,)).astype('float32'))
         orig_input_batch_size = input_shape[0]
         input_shape = list(input_shape)
         input_shape[0] = 1
@@ -105,6 +104,30 @@ class Conv2D(Layer):
     def fprop(self, x):
         return tf.nn.conv2d(x, self.kernels, (1,) + tuple(self.strides) + (1,),
                             self.padding) + self.b
+
+class MaxPool(Layer):
+    def __init__(self, ksize, strides, padding):
+        super(MaxPool, self).__init__()
+        self.__dict__.update(locals())
+        del self.self
+
+    def set_input_shape(self, input_shape):
+        input_shape = list(input_shape)
+        input_shape[0] = 1
+        dummy_batch = tf.zeros(input_shape)
+        dummy_output = self.fprop(dummy_batch)
+        output_shape = [int(e) for e in dummy_output.get_shape()]
+        output_shape[0] = 1
+        self.output_shape = tuple(output_shape)
+
+    def get_output_shape(self):
+        return self.output_shape
+
+    def fprop(self, x):
+        return tf.nn.max_pool(x,
+                              ksize=(1,) + tuple(self.ksize) + (1,),
+                              strides=(1,) + tuple(self.strides) + (1,),
+                              padding=self.padding)
 
 
 class ReLU(Layer):
@@ -154,28 +177,81 @@ class Flatten(Layer):
 
 def make_gp_cnn(num_h=100, nb_filters=64, nb_classes=10,
                    input_shape=(None, 28, 28, 1)):
-    layers = [Conv2D(nb_filters, (8, 8), (2, 2), "SAME"),
+    layers = [Conv2D(nb_filters, (8, 8), (2, 2), "SAME", "conv1_1"),
               ReLU(),
-              Conv2D(nb_filters * 2, (6, 6), (2, 2), "VALID"),
+              Conv2D(nb_filters * 2, (6, 6), (2, 2), "VALID", "conv1_2"),
               ReLU(),
-              Conv2D(nb_filters * 2, (5, 5), (1, 1), "VALID"),
+              Conv2D(nb_filters * 2, (5, 5), (1, 1), "VALID", "conv1_3"),
               ReLU(),
               Flatten(),
-              Linear(num_h)]
+              Linear(num_h, "fc_1")]
 
     model = MLP(layers, input_shape)
     return model
 
 def make_basic_cnn(nb_filters=64, nb_classes=10,
                    input_shape=(None, 28, 28, 1)):
-    layers = [Conv2D(nb_filters, (8, 8), (2, 2), "SAME"),
+    layers = [Conv2D(nb_filters, (8, 8), (2, 2), "SAME", "conv1_1"),
               ReLU(),
-              Conv2D(nb_filters * 2, (6, 6), (2, 2), "VALID"),
+              Conv2D(nb_filters * 2, (6, 6), (2, 2), "VALID", "conv1_2"),
               ReLU(),
-              Conv2D(nb_filters * 2, (5, 5), (1, 1), "VALID"),
+              Conv2D(nb_filters * 2, (5, 5), (1, 1), "VALID", "conv1_3"),
               ReLU(),
               Flatten(),
-              Linear(nb_classes),
+              Linear(nb_classes, "fc_1"),
+              Softmax()]
+
+    model = MLP(layers, input_shape)
+    return model
+
+def make_gp_cifar10_cnn(num_h=100, nb_filters=64, nb_classes=10,
+                   input_shape=(None, 28, 28, 1)):
+
+    layers = [Conv2D(32, (3, 3), (1, 1), "SAME", "conv1_1"),
+              ReLU(),
+              Conv2D(32, (3, 3), (1, 1), "VALID", "conv1_2"),
+              ReLU(),
+              MaxPool((2, 2), (2, 2), "VALID"),
+              Conv2D(64, (3, 3), (1, 1), "SAME", "conv2_1"),
+              ReLU(),
+              Conv2D(64, (3, 3), (1, 1), "VALID", "conv2_2"),
+              ReLU(),
+              MaxPool((2, 2), (2, 2), "VALID"),
+              Conv2D(128, (3, 3), (1, 1), "SAME", "conv3_1"),
+              ReLU(),
+              Conv2D(128, (3, 3), (1, 1), "VALID", "conv3_2"),
+              ReLU(),
+              MaxPool((2, 2), (2, 2), "VALID"),
+              Flatten(),
+              Linear(512, "fc_1"),
+              ReLU(),
+              Linear(num_h, "fc_2")]
+
+    model = MLP(layers, input_shape)
+    return model
+
+def make_cifar10_cnn(nb_filters=64, nb_classes=10,
+                   input_shape=(None, 28, 28, 1)):
+
+    layers = [Conv2D(32, (3, 3), (1, 1), "SAME", "conv1_1"),
+              ReLU(),
+              Conv2D(32, (3, 3), (1, 1), "VALID", "conv1_2"),
+              ReLU(),
+              MaxPool((2, 2), (2, 2), "VALID"),
+              Conv2D(64, (3, 3), (1, 1), "SAME", "conv2_1"),
+              ReLU(),
+              Conv2D(64, (3, 3), (1, 1), "VALID", "conv2_2"),
+              ReLU(),
+              MaxPool((2, 2), (2, 2), "VALID"),
+              Conv2D(128, (3, 3), (1, 1), "SAME", "conv3_1"),
+              ReLU(),
+              Conv2D(128, (3, 3), (1, 1), "VALID", "conv3_2"),
+              ReLU(),
+              MaxPool((2, 2), (2, 2), "VALID"),
+              Flatten(),
+              Linear(512, "fc_1"),
+              ReLU(),
+              Linear(nb_classes, "fc_2"),
               Softmax()]
 
     model = MLP(layers, input_shape)

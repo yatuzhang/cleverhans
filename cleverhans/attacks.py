@@ -223,6 +223,109 @@ class Attack(object):
         """
         return True
 
+class FastGradientMethodGP(Attack):
+
+    """
+    This attack was originally implemented by Goodfellow et al. (2015) with the
+    infinity norm (and is known as the "Fast Gradient Sign Method"). This
+    implementation extends the attack to other norms, and is therefore called
+    the Fast Gradient Method.
+    Paper link: https://arxiv.org/abs/1412.6572
+    """
+
+    def __init__(self, model, preds, back='tf', sess=None):
+        """
+        Create a FastGradientMethod instance.
+        Note: the model parameter should be an instance of the
+        cleverhans.model.Model abstraction provided by CleverHans.
+        """
+        super(FastGradientMethodGP, self).__init__(model, back, sess)
+        self.preds = preds
+        self.feedable_kwargs = {'eps': np.float32,
+                                'y': np.float32,
+                                'y_target': np.float32,
+                                'clip_min': np.float32,
+                                'clip_max': np.float32}
+        self.structural_kwargs = ['ord']
+
+        if not isinstance(self.model, Model):
+            self.model = CallableModelWrapper(self.model, 'probs')
+
+    def generate(self, x, **kwargs):
+        """
+        Generate symbolic graph for adversarial examples and return.
+        :param x: The model's symbolic inputs.
+        :param eps: (optional float) attack step size (input variation)
+        :param ord: (optional) Order of the norm (mimics NumPy).
+                    Possible values: np.inf, 1 or 2.
+        :param y: (optional) A tensor with the model labels. Only provide
+                  this parameter if you'd like to use true labels when crafting
+                  adversarial samples. Otherwise, model predictions are used as
+                  labels to avoid the "label leaking" effect (explained in this
+                  paper: https://arxiv.org/abs/1611.01236). Default is None.
+                  Labels should be one-hot-encoded.
+        :param y_target: (optional) A tensor with the labels to target. Leave
+                         y_target=None if y is also set. Labels should be
+                         one-hot-encoded.
+        :param clip_min: (optional float) Minimum input component value
+        :param clip_max: (optional float) Maximum input component value
+        """
+        # Parse and save attack-specific parameters
+        assert self.parse_params(**kwargs)
+
+        if self.back == 'tf':
+            from .attacks_tf import fgm
+        else:
+            from .attacks_th import fgm
+
+        labels, nb_classes = self.get_or_guess_labels(x, kwargs)
+
+        return fgm(x, self.preds, y=labels, eps=self.eps,
+                   ord=self.ord, clip_min=self.clip_min,
+                   clip_max=self.clip_max,
+                   targeted=(self.y_target is not None))
+
+    def parse_params(self, eps=0.3, ord=np.inf, y=None, y_target=None,
+                     clip_min=None, clip_max=None, **kwargs):
+        """
+        Take in a dictionary of parameters and applies attack-specific checks
+        before saving them as attributes.
+
+        Attack-specific parameters:
+        :param eps: (optional float) attack step size (input variation)
+        :param ord: (optional) Order of the norm (mimics NumPy).
+                    Possible values: np.inf, 1 or 2.
+        :param y: (optional) A tensor with the model labels. Only provide
+                  this parameter if you'd like to use true labels when crafting
+                  adversarial samples. Otherwise, model predictions are used as
+                  labels to avoid the "label leaking" effect (explained in this
+                  paper: https://arxiv.org/abs/1611.01236). Default is None.
+                  Labels should be one-hot-encoded.
+        :param y_target: (optional) A tensor with the labels to target. Leave
+                         y_target=None if y is also set. Labels should be
+                         one-hot-encoded.
+        :param clip_min: (optional float) Minimum input component value
+        :param clip_max: (optional float) Maximum input component value
+        """
+        # Save attack-specific parameters
+
+        self.eps = eps
+        self.ord = ord
+        self.y = y
+        self.y_target = y_target
+        self.clip_min = clip_min
+        self.clip_max = clip_max
+
+        if self.y is not None and self.y_target is not None:
+            raise ValueError("Must not set both y and y_target")
+        # Check if order of the norm is acceptable given current implementation
+        if self.ord not in [np.inf, int(1), int(2)]:
+            raise ValueError("Norm order must be either np.inf, 1, or 2.")
+        if self.back == 'th' and self.ord != np.inf:
+            raise NotImplementedError("The only FastGradientMethod norm "
+                                      "implemented for Theano is np.inf.")
+        return True
+
 
 class FastGradientMethod(Attack):
 

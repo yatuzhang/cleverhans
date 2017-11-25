@@ -13,6 +13,14 @@ import time
 import warnings
 import logging
 
+from sklearn import cluster
+from scipy.spatial import distance
+import pandas as pd
+
+import gpflow as gpf
+from cleverhans.utils import set_log_level, setup_logger
+
+
 from .utils import batch_indices, _ArgsWrapper, create_logger, set_log_level
 
 FLAGS = tf.app.flags.FLAGS
@@ -85,6 +93,139 @@ def initialize_uninitialized_global_variables(sess):
     if len(not_initialized_vars):
         sess.run(tf.variables_initializer(not_initialized_vars))
 
+def suggest_good_initial_inducing_points(x, y, x_data, h, tf_session, num_inducing, shape=28, channel=1):
+    h_data = tf_session.run(h, feed_dict={x: np.reshape(x_data, (-1, shape*shape*channel))})
+    kmeans = cluster.MiniBatchKMeans(n_clusters=num_inducing, batch_size=num_inducing*10)
+    kmeans.fit(h_data)
+    new_inducing = kmeans.cluster_centers_
+    return new_inducing
+
+
+def suggest_sensible_lengthscale(x, y, x_data, h, tf_session, shape=28, channel=1):
+    h_data = tf_session.run(h, feed_dict={x: np.reshape(x_data, (-1, shape*shape*channel))})
+    lengthscale = np.mean(distance.pdist(h_data, 'euclidean'))
+    return lengthscale
+
+
+def model_gpdnn_train(sess, x, y, h, X_train, Y_train, train_step, save=False,
+                predictions_adv=None, init_all=True, evaluate=None,
+                verbose=True, feed=None, args=None, rng=None, shape=28, channel=1):
+    args = _FlagsWrapper(args or {})
+
+    # Check that necessary arguments were given (see doc above)
+    assert args.nb_epochs, "Number of epochs was not given in args dict"
+    assert args.learning_rate, "Learning rate was not given in args dict"
+    assert args.batch_size, "Batch size was not given in args dict"
+
+    if save:
+        assert args.train_dir, "Directory for save was not given in args dict"
+        assert args.filename, "Filename for save was not given in args dict"
+
+    if not verbose:
+        set_log_level(logging.WARNING)
+        warnings.warn("verbose argument is deprecated and will be removed"
+                      " on 2018-02-11. Instead, use utils.set_log_level()."
+                      " For backward compatibility, log_level was set to"
+                      " logging.WARNING (30).")
+
+    if rng is None:
+        rng = np.random.RandomState()
+
+    with sess.as_default():
+        for epoch in xrange(args.nb_epochs):
+            # Compute number of batches
+            nb_batches = int(math.ceil(float(len(X_train)) / args.batch_size))
+            assert nb_batches * args.batch_size >= len(X_train)
+
+            # Indices to shuffle training set
+            index_shuf = list(range(len(X_train)))
+            rng.shuffle(index_shuf)
+
+            prev = time.time()
+            for batch in range(nb_batches):
+
+                # Compute batch start and end indices
+                start, end = batch_indices(
+                    batch, len(X_train), args.batch_size)
+
+                # Perform one training step
+                feed_dict = {x: np.reshape(X_train[index_shuf[start:end]], (-1, shape*shape*channel)),
+                             y: Y_train[index_shuf[start:end]]}
+                if feed is not None:
+                    feed_dict.update(feed)
+                train_step.run(feed_dict=feed_dict)
+            assert end >= len(X_train)  # Check that all examples were used
+            cur = time.time()
+            if verbose:
+                _logger.info("Epoch " + str(epoch) + " took " +
+                             str(cur - prev) + " seconds")
+            if evaluate is not None:
+                evaluate()
+
+        if save:
+            save_path = os.path.join(args.train_dir, args.filename)
+            saver = tf.train.Saver()
+            saver.save(sess, save_path)
+            _logger.info("Completed model training and saved at: " +
+                         str(save_path))
+        else:
+            _logger.info("Completed model training.")
+
+    return True
+
+def model_wrap_gp(sess, tf_graph, x, y, X_train, Y_train, h, verbose=True, feed=None, args=None, shape=28, channel=1):
+    args = _FlagsWrapper(args or {})
+    h = tf.cast(h, gpf.settings.tf_float)
+    # Check that necessary arguments were given (see doc above)
+    assert args.nb_epochs, "Number of epochs was not given in args dict"
+    assert args.learning_rate, "Learning rate was not given in args dict"
+    assert args.batch_size, "Batch size was not given in args dict"
+
+    if not verbose:
+        set_log_level(logging.WARNING)
+        warnings.warn("verbose argument is deprecated and will be removed"
+                      " on 2018-02-11. Instead, use utils.set_log_level()."
+                      " For backward compatibility, log_level was set to"
+                      " logging.WARNING (30).")
+
+    num_h = 100
+    num_classes = 10
+    num_inducing = 300
+    minibatch_size = args.batch_size
+
+    # ## We now set up the GP part. Instead of the usual X data it will get the data after being processed by the NN.
+    kernel = gpf.kernels.RBF(num_h)
+    likelihood = gpf.likelihoods.MultiClass(num_classes)
+    with tf_graph.as_default():
+        gp_model = gpf.models.SVGP(h, y, kernel, likelihood, np.ones((num_inducing, num_h), gpf.settings.np_float),
+                                   num_latent=num_classes, whiten=False, minibatch_size=None, num_data=X_train.shape[0])
+        # ^ so we say minibatch size is None to make sure we get DataHolder rather than minibatch data holder, which
+        # does not allow us to give in tensors. But we will handle all our minibatching outside.
+        gp_model.compile(sess)
+
+    # ## The initial lengthscales and inducing point locations are likely very bad. So we use heuristics for good
+    # initial starting points and reset them at these values.
+        gp_model.Z.assign(suggest_good_initial_inducing_points(x, y, X_train[:5000, :], h, sess, num_inducing, shape, channel))
+        gp_model.kern.lengthscales.assign(suggest_sensible_lengthscale(x, y, X_train[:5000, :], h, sess, shape, channel) + np.zeros_like(gp_model.kern.lengthscales.read_value()))
+    # ^ note that this assign should reapply the transform for us :). The zeros ND array exists to make sure
+    # the lengthscales are the correct shape via  broadcasting
+
+    # ## We create ops to measure the predictive log likelihood and the accuracy.
+    # ## We create ops to measure the predictive log likelihood and the accuracy.
+    with tf_graph.as_default():
+        preds = gp_model.likelihood.predict_mean_and_var(*gp_model._build_predict(h))[0]
+
+        # ## we now create an optimiser and initialise its variables. Note that you could use a GPflow optimiser here
+        # and this would now be done for you.
+        all_vars_up_to_trainer = tf.global_variables()
+        optimiser = tf.train.AdamOptimizer()
+        _logger.info(tf.global_variables())
+        minimise = optimiser.minimize(gp_model.objective)  # this should pick up all Trainable variables.
+        adam_vars = list(set(tf.global_variables()) - set(all_vars_up_to_trainer))
+        sess.run(tf.variables_initializer(adam_vars))
+    train_step = minimise
+
+    return gp_model, train_step, preds
 
 def model_train(sess, x, y, predictions, X_train, Y_train, save=False,
                 predictions_adv=None, init_all=True, evaluate=None,
@@ -197,6 +338,88 @@ def model_train(sess, x, y, predictions, X_train, Y_train, save=False,
             _logger.info("Completed model training.")
 
     return True
+
+def model_gpdnn_eval(sess, gp_model, x, y, h, predictions=None, X_test=None, Y_test=None,
+               feed=None, args=None, model=None):
+    """
+    Compute the accuracy of a TF model on some data
+    :param sess: TF session to use when training the graph
+    :param x: input placeholder
+    :param y: output placeholder (for labels)
+    :param predictions: model output predictions
+    :param X_test: numpy array with training inputs
+    :param Y_test: numpy array with training outputs
+    :param feed: An optional dictionary that is appended to the feeding
+             dictionary before the session runs. Can be used to feed
+             the learning phase of a Keras model for instance.
+    :param args: dict or argparse `Namespace` object.
+                 Should contain `batch_size`
+    :param model: (deprecated) if not None, holds model output predictions
+    :return: a float with the accuracy value
+    """
+    args = _FlagsWrapper(args or {})
+    h = tf.cast(h, gpf.settings.tf_float)
+
+    assert args.batch_size, "Batch size was not given in args dict"
+    if X_test is None or Y_test is None:
+        raise ValueError("X_test argument and Y_test argument "
+                         "must be supplied.")
+    if model is None and predictions is None:
+        raise ValueError("One of model argument "
+                         "or predictions argument must be supplied.")
+    if model is not None:
+        warnings.warn("model argument is deprecated. "
+                      "Switch to predictions argument. "
+                      "model argument will be removed after 2018-01-05.")
+        if predictions is None:
+            predictions = model
+        else:
+            raise ValueError("Exactly one of model argument"
+                             " and predictions argument should be specified.")
+
+    log_likelihood_predict = gp_model.likelihood.predict_density(*gp_model._build_predict(h), y)
+    acc = tf.cast(tf.equal(tf.argmax(gp_model.likelihood.predict_mean_and_var(*gp_model._build_predict(h))[0], axis=1, output_type=tf.int32),
+                                     tf.squeeze(y)), tf.float32)
+    preds = gp_model.likelihood.predict_mean_and_var(*gp_model._build_predict(h))[0]
+    avg_acc = tf.reduce_mean(acc)
+    avg_ll = tf.reduce_mean(log_likelihood_predict)
+    # Init result var
+    accuracy = 0.0
+    ll = 0.0
+
+    with sess.as_default():
+        # Compute number of batches
+        nb_batches = int(math.ceil(float(len(X_test)) / args.batch_size))
+        assert nb_batches * args.batch_size >= len(X_test)
+
+        for batch in range(nb_batches):
+            if batch % 100 == 0 and batch > 0:
+                _logger.debug("Batch " + str(batch))
+
+            # Must not use the `batch_indices` function here, because it
+            # repeats some examples.
+            # It's acceptable to repeat during training, but not eval.
+            start = batch * args.batch_size
+            end = min(len(X_test), start + args.batch_size)
+            cur_batch_size = end - start
+
+            # The last batch may be smaller than all others, so we need to
+            # account for variable batch size here
+            feed_dict = {x: X_test[start:end], y: Y_test[start:end]}
+            if feed is not None:
+                feed_dict.update(feed)
+            cur_acc = avg_acc.eval(feed_dict=feed_dict)
+            curr_ll = avg_ll.eval(feed_dict=feed_dict)
+            accuracy += (cur_batch_size * cur_acc)
+            ll += (curr_ll * cur_batch_size)
+
+        assert end >= len(X_test)
+
+        # Divide by number of examples to get final value
+        accuracy /= len(X_test)
+        ll /= len(X_test)
+
+    return accuracy, ll
 
 
 def model_eval(sess, x, y, predictions=None, X_test=None, Y_test=None,

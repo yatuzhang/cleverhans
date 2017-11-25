@@ -15,17 +15,13 @@ import tensorflow as tf
 from tensorflow.python.platform import flags
 import logging
 import time
-import argparse
-from cleverhans.utils_mnist import data_mnist
-from cleverhans.utils_tf import model_gpdnn_train, model_eval, model_wrap_gp, model_gpdnn_eval
-from cleverhans.attacks import FastGradientMethodGP
-from cleverhans_tutorials.tutorial_models import make_gp_cnn
+from cleverhans.utils_mnist import data_cifar10
+from cleverhans.utils_tf import model_train, model_eval
+from cleverhans.attacks import FastGradientMethod
+from cleverhans_tutorials.tutorial_models import make_basic_cnn, make_cifar10_cnn
 from cleverhans.utils import AccuracyReport, set_log_level, setup_logger
-from tensorflow.examples.tutorials.mnist import input_data as mnist_input_data
-
+import argparse
 import os
-
-FLAGS = flags.FLAGS
 
 """
 CleverHans is intended to supply attacks and defense, not models.
@@ -102,16 +98,6 @@ def define():
     global FLAGS
     FLAGS = parser.parse_args()
 
-def get_mnist():
-    mnist = mnist_input_data.read_data_sets(os.path.join(os.path.dirname(__file__), "mnist_data/"), one_hot=False, validation_size=0)
-
-    norm_data = lambda img_in: 2.*img_in - 1.
-    add_extra_dim = lambda x: x[:, np.newaxis]
-
-    return (norm_data(mnist.train.images), add_extra_dim(mnist.train.labels),
-            norm_data(mnist.validation.images), add_extra_dim(mnist.validation.labels),
-            norm_data(mnist.test.images), add_extra_dim(mnist.test.labels))
-
 
 def mnist_tutorial(train_start=0, train_end=60000, test_start=0,
                    test_end=10000, nb_epochs=6, batch_size=128,
@@ -143,22 +129,20 @@ def mnist_tutorial(train_start=0, train_end=60000, test_start=0,
     # Set logging level to see debug information
     set_log_level(logging.DEBUG)
 
-    tf_graph = tf.Graph()
     # Create TF session
-    sess = tf.Session(graph=tf_graph)
+    sess = tf.Session()
 
     # Get MNIST test data
-    X_train, Y_train, X_test, Y_test, Y_test_OneHot = data_mnist(train_start=train_start,
-                                                  train_end=train_end,
-                                                  test_start=test_start,
-                                                  test_end=test_end,
-                                                  one_hot=False)
-    
+    X_train, Y_train, X_test, Y_test = data_cifar10()
+
+    # Use label smoothing
+    assert Y_train.shape[1] == 10
+    label_smooth = .1
+    Y_train = Y_train.clip(label_smooth / 9., 1. - label_smooth)
+
     # Define input TF placeholder
-    with tf_graph.as_default():
-        x = tf.placeholder(tf.float32, shape=[None, 28*28])
-        x_reshaped = tf.reshape(x,[-1, 28, 28, 1])
-        y = tf.placeholder(tf.int32, shape=[None])
+    x = tf.placeholder(tf.float32, shape=(None, 32, 32, 3))
+    y = tf.placeholder(tf.float32, shape=(None, 10))
 
     model_path = "models/mnist"
     # Train an MNIST model
@@ -167,56 +151,95 @@ def mnist_tutorial(train_start=0, train_end=60000, test_start=0,
         'batch_size': batch_size,
         'learning_rate': learning_rate
     }
-    fgsm_params = {'eps': FLAGS.eps, 'y': Y_test_OneHot}
+    fgsm_params = {'eps': FLAGS.eps}
     rng = np.random.RandomState([2017, 8, 30])
 
     if clean_train:
-        with tf_graph.as_default():
-            model = make_gp_cnn(num_h=100)
-            h = model.get_logits(x_reshaped)
-            nn_vars = tf.global_variables()  # only nn variables exist up to now.
-        sess.run(tf.variables_initializer(nn_vars))
-
-        #Wrap GP layer around
-        gp_model, train_step, preds = model_wrap_gp(sess, tf_graph, x, y, X_train, Y_train, h, args=train_params)
-
+        model = make_cifar10_cnn(input_shape=(None, 32, 32, 3))
+        preds = model.get_probs(x)
 
         def evaluate():
             # Evaluate the accuracy of the MNIST model on legitimate test
             # examples
-            with tf_graph.as_default():
-                eval_params = {'batch_size': batch_size}
-                acc, ll = model_gpdnn_eval(
-                    sess, gp_model, x_reshaped, y, h, preds, X_test, Y_test, args=eval_params)
-                report.clean_train_clean_eval = acc
-                assert X_test.shape[0] == test_end - test_start, X_test.shape
-                logger.info('Test accuracy on legitimate examples: %0.4f' % acc)
-        model_gpdnn_train(sess, x, y, h, X_train, Y_train, train_step, evaluate=evaluate,
+            eval_params = {'batch_size': batch_size}
+            acc = model_eval(
+                sess, x, y, preds, X_test, Y_test, args=eval_params)
+            report.clean_train_clean_eval = acc
+            assert X_test.shape[0] == test_end - test_start, X_test.shape
+            logger.info('Test accuracy on legitimate examples: %0.4f' % acc)
+        model_train(sess, x, y, preds, X_train, Y_train, evaluate=evaluate,
                     args=train_params, rng=rng)
+
+        # Calculate training error
+        if testing:
+            eval_params = {'batch_size': batch_size}
+            acc = model_eval(
+                sess, x, y, preds, X_train, Y_train, args=eval_params)
+            report.train_clean_train_clean_eval = acc
 
         # Initialize the Fast Gradient Sign Method (FGSM) attack object and
         # graph
-        with tf_graph.as_default():
-            fgsm = FastGradientMethodGP(model, preds, sess=sess)
+        fgsm = FastGradientMethod(model, sess=sess)
 
-            adv_x = fgsm.generate(x_reshaped, **fgsm_params)
-            if not backprop_through_attack:
-                # For the fgsm attack used in this tutorial, the attack has zero
-                # gradient so enabling this flag does not change the gradient.
-                # For some other attacks, enabling this flag increases the cost of
-                # training, but gives the defender the ability to anticipate how
-                # the atacker will change their strategy in response to updates to
-                # the defender's parameters.
-                adv_x = tf.stop_gradient(adv_x)
-            preds_adv = preds
+        adv_x = fgsm.generate(x, **fgsm_params)
+        if not backprop_through_attack:
+            # For the fgsm attack used in this tutorial, the attack has zero
+            # gradient so enabling this flag does not change the gradient.
+            # For some other attacks, enabling this flag increases the cost of
+            # training, but gives the defender the ability to anticipate how
+            # the atacker will change their strategy in response to updates to
+            # the defender's parameters.
+            adv_x = tf.stop_gradient(adv_x)
+        preds_adv = model.get_probs(adv_x)
 
         # Evaluate the accuracy of the MNIST model on adversarial examples
+        eval_par = {'batch_size': batch_size}
+        acc = model_eval(sess, x, y, preds_adv, X_test, Y_test, args=eval_par)
+        logger.info('Test accuracy on adversarial examples: %0.4f\n' % acc)
+        report.clean_train_adv_eval = acc
+
+        # Calculate training error
+        if testing:
             eval_par = {'batch_size': batch_size}
-            feed_dict = {x_reshaped: X_test}
-            X_test_adv = sess.run(adv_x, feed_dict=feed_dict)
-            acc, ll = model_gpdnn_eval(sess, gp_model, x_reshaped, y, h, preds_adv, X_test_adv, Y_test, args=eval_par)
-            logger.info('Test accuracy on adversarial examples: %0.4f\n' % acc)
-            report.clean_train_adv_eval = acc
+            acc = model_eval(sess, x, y, preds_adv, X_train,
+                             Y_train, args=eval_par)
+            report.train_clean_train_adv_eval = acc
+
+        logger.info("Repeating the process, using adversarial training")
+    # Redefine TF model graph
+    model_2 = make_cifar10_cnn(input_shape=(None, 32, 32, 3))
+    preds_2 = model_2(x)
+    fgsm2 = FastGradientMethod(model_2, sess=sess)
+    preds_2_adv = model_2(fgsm2.generate(x, **fgsm_params))
+
+    def evaluate_2():
+        # Accuracy of adversarially trained model on legitimate test inputs
+        eval_params = {'batch_size': batch_size}
+        accuracy = model_eval(sess, x, y, preds_2, X_test, Y_test,
+                              args=eval_params)
+        logger.info('Test accuracy on legitimate examples: %0.4f' % accuracy)
+        report.adv_train_clean_eval = accuracy
+
+        # Accuracy of the adversarially trained model on adversarial examples
+        accuracy = model_eval(sess, x, y, preds_2_adv, X_test,
+                              Y_test, args=eval_params)
+        logger.info('Test accuracy on adversarial examples: %0.4f' % accuracy)
+        report.adv_train_adv_eval = accuracy
+
+    # Perform and evaluate adversarial training
+    model_train(sess, x, y, preds_2, X_train, Y_train,
+                predictions_adv=preds_2_adv, evaluate=evaluate_2,
+                args=train_params, rng=rng)
+
+    # Calculate training errors
+    if testing:
+        eval_params = {'batch_size': batch_size}
+        accuracy = model_eval(sess, x, y, preds_2, X_train, Y_train,
+                              args=eval_params)
+        report.train_adv_train_clean_eval = accuracy
+        accuracy = model_eval(sess, x, y, preds_2_adv, X_train,
+                              Y_train, args=eval_params)
+        report.train_adv_train_adv_eval = accuracy
 
     return report
 
@@ -225,15 +248,14 @@ def main(argv=None):
     define()
     if (FLAGS.summaries_dir and not os.path.exists(FLAGS.summaries_dir)):
         os.makedirs(FLAGS.summaries_dir)
-    setup_logger('log', stream=True, log_file=FLAGS.summaries_dir+"mnist_gpdnn_results.txt")
+    setup_logger('log', stream=True, log_file=FLAGS.summaries_dir+"mnist_adv_cifar10_results.txt")
     global logger
     logger = logging.getLogger('log')
     logger.info(FLAGS)
-    mnist_tutorial(nb_epochs=FLAGS.nb_epochs, batch_size=FLAGS.batch_size,
+    report = mnist_tutorial(nb_epochs=FLAGS.nb_epochs, batch_size=FLAGS.batch_size,
                    learning_rate=FLAGS.learning_rate,
                    clean_train=FLAGS.clean_train,
                    backprop_through_attack=FLAGS.backprop_through_attack)
-
 
 if __name__ == '__main__':
     tf.app.run()

@@ -16,10 +16,10 @@ from tensorflow.python.platform import flags
 import logging
 import time
 import argparse
-from cleverhans.utils_mnist import data_mnist
+from cleverhans.utils_mnist import data_cifar10
 from cleverhans.utils_tf import model_gpdnn_train, model_eval, model_wrap_gp, model_gpdnn_eval
 from cleverhans.attacks import FastGradientMethodGP
-from cleverhans_tutorials.tutorial_models import make_gp_cnn
+from cleverhans_tutorials.tutorial_models import make_gp_cifar10_cnn
 from cleverhans.utils import AccuracyReport, set_log_level, setup_logger
 from tensorflow.examples.tutorials.mnist import input_data as mnist_input_data
 
@@ -138,7 +138,7 @@ def mnist_tutorial(train_start=0, train_end=60000, test_start=0,
     report = AccuracyReport()
 
     # Set TF random seed to improve reproducibility
-    tf.set_random_seed(1234)
+    #tf.set_random_seed(1234)
 
     # Set logging level to see debug information
     set_log_level(logging.DEBUG)
@@ -148,16 +148,14 @@ def mnist_tutorial(train_start=0, train_end=60000, test_start=0,
     sess = tf.Session(graph=tf_graph)
 
     # Get MNIST test data
-    X_train, Y_train, X_test, Y_test, Y_test_OneHot = data_mnist(train_start=train_start,
-                                                  train_end=train_end,
-                                                  test_start=test_start,
-                                                  test_end=test_end,
-                                                  one_hot=False)
-    
+    X_train, Y_train, X_test, Y_test = data_cifar10()
+    Y_train = np.argmax(Y_train, axis=1)
+    Y_test_OneHot = Y_test
+    Y_test = np.argmax(Y_test, axis=1)
     # Define input TF placeholder
     with tf_graph.as_default():
-        x = tf.placeholder(tf.float32, shape=[None, 28*28])
-        x_reshaped = tf.reshape(x,[-1, 28, 28, 1])
+        x = tf.placeholder(tf.float32, shape=[None, 32*32*3])
+        x_reshaped = tf.reshape(x,[-1, 32, 32, 3])
         y = tf.placeholder(tf.int32, shape=[None])
 
     model_path = "models/mnist"
@@ -172,13 +170,13 @@ def mnist_tutorial(train_start=0, train_end=60000, test_start=0,
 
     if clean_train:
         with tf_graph.as_default():
-            model = make_gp_cnn(num_h=100)
+            model = make_gp_cifar10_cnn(num_h=100, input_shape=[None, 32, 32, 3])
             h = model.get_logits(x_reshaped)
             nn_vars = tf.global_variables()  # only nn variables exist up to now.
         sess.run(tf.variables_initializer(nn_vars))
 
         #Wrap GP layer around
-        gp_model, train_step, preds = model_wrap_gp(sess, tf_graph, x, y, X_train, Y_train, h, args=train_params)
+        gp_model, train_step, preds = model_wrap_gp(sess, tf_graph, x, y, X_train, Y_train, h, args=train_params, shape=32, channel=3)
 
 
         def evaluate():
@@ -192,7 +190,7 @@ def mnist_tutorial(train_start=0, train_end=60000, test_start=0,
                 assert X_test.shape[0] == test_end - test_start, X_test.shape
                 logger.info('Test accuracy on legitimate examples: %0.4f' % acc)
         model_gpdnn_train(sess, x, y, h, X_train, Y_train, train_step, evaluate=evaluate,
-                    args=train_params, rng=rng)
+                    args=train_params, rng=rng, shape=32, channel=3)
 
         # Initialize the Fast Gradient Sign Method (FGSM) attack object and
         # graph
@@ -225,7 +223,7 @@ def main(argv=None):
     define()
     if (FLAGS.summaries_dir and not os.path.exists(FLAGS.summaries_dir)):
         os.makedirs(FLAGS.summaries_dir)
-    setup_logger('log', stream=True, log_file=FLAGS.summaries_dir+"mnist_gpdnn_results.txt")
+    setup_logger('log', stream=True, log_file=FLAGS.summaries_dir+"cifar10_gpdnn_results.txt")
     global logger
     logger = logging.getLogger('log')
     logger.info(FLAGS)
